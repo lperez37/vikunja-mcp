@@ -1,5 +1,5 @@
 {
-  "name": "@0xK3vin/vikunja-mcp",
+  "name": "@0xk3vin/vikunja-mcp",
   "version": "1.1.0",
   "description": "MCP server for Vikunja task management",
   "type": "module",
