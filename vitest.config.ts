@@ -17,7 +17,7 @@ export default defineConfig({
         "dist/**",
         "**/*.config.*",
         "**/*.d.ts",
-        "**/index.ts", // Entry point, mostly just exports
+        "**/types.ts", // Type definitions only
       ],
       // Coverage thresholds
       thresholds: {
