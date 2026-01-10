@@ -21,7 +21,7 @@
 ```
 
 [![Build](https://github.com/0xK3vin/vikunja-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/0xK3vin/vikunja-mcp/actions/workflows/ci.yml)
-[![npm version](https://img.shields.io/npm/v/@0xK3vin/vikunja-mcp.svg)](https://www.npmjs.com/package/@0xK3vin/vikunja-mcp)
+[![npm version](https://img.shields.io/npm/v/@0xk3vin/vikunja-mcp.svg)](https://www.npmjs.com/package/@0xk3vin/vikunja-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org/)
 
@@ -48,7 +48,7 @@ WHY VIKUNJA-MCP?
 
 ```bash
 # Install
-$ npm install -g @0xK3vin/vikunja-mcp
+$ npm install -g @0xk3vin/vikunja-mcp
 
 # Set environment variables
 $ export VIKUNJA_URL="https://your-vikunja-instance.com"
@@ -66,7 +66,7 @@ Add to your config file:
   "mcpServers": {
     "vikunja": {
       "command": "npx",
-      "args": ["-y", "@0xK3vin/vikunja-mcp"],
+      "args": ["-y", "@0xk3vin/vikunja-mcp"],
       "env": {
         "VIKUNJA_URL": "https://your-vikunja-instance.com",
         "VIKUNJA_API_TOKEN": "your_api_token"
