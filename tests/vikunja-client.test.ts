@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { VikunjaClient, getClient } from "../src/vikunja-client.js";
+import { VikunjaClient, getClient, VikunjaApiError } from "../src/vikunja-client.js";
 
 // Mock fetch globally
 const mockFetch = vi.fn();
@@ -343,9 +343,7 @@ describe("VikunjaClient", () => {
           .mockResolvedValueOnce(errorResponse)
           .mockResolvedValueOnce(errorResponse);
 
-        await expect(client.get("/projects")).rejects.toThrow(
-          "API request failed: 500 Internal Server Error"
-        );
+        await expect(client.get("/projects")).rejects.toThrow("500 Internal Server Error");
       });
 
       it("should handle non-JSON error responses", async () => {
@@ -365,9 +363,7 @@ describe("VikunjaClient", () => {
           .mockResolvedValueOnce(errorResponse)
           .mockResolvedValueOnce(errorResponse);
 
-        await expect(client.get("/projects")).rejects.toThrow(
-          "API request failed: 502 Bad Gateway"
-        );
+        await expect(client.get("/projects")).rejects.toThrow("502 Bad Gateway");
       });
 
       it("should propagate network errors after retries", async () => {
@@ -413,6 +409,73 @@ describe("VikunjaClient", () => {
         await expect(client.get("/projects/1")).rejects.toThrow(
           "You don't have access to this resource"
         );
+      });
+
+      it("should throw VikunjaApiError with status code and endpoint", async () => {
+        mockFetch.mockResolvedValueOnce({
+          ok: false,
+          status: 404,
+          statusText: "Not Found",
+          headers: new Headers(),
+          json: async () => ({ message: "Project not found" }),
+        });
+
+        try {
+          await client.get("/projects/999");
+          expect.fail("Should have thrown an error");
+        } catch (error) {
+          expect(error).toBeInstanceOf(VikunjaApiError);
+          const apiError = error as VikunjaApiError;
+          expect(apiError.statusCode).toBe(404);
+          expect(apiError.endpoint).toBe("/projects/999");
+          expect(apiError.method).toBe("GET");
+          expect(apiError.message).toBe("Project not found");
+          expect(apiError.suggestion).toBe(
+            "The requested resource does not exist or has been deleted"
+          );
+        }
+      });
+
+      it("should include suggestion for 401 unauthorized", async () => {
+        mockFetch.mockResolvedValueOnce({
+          ok: false,
+          status: 401,
+          statusText: "Unauthorized",
+          headers: new Headers(),
+          json: async () => ({ message: "Token expired" }),
+        });
+
+        try {
+          await client.get("/projects");
+          expect.fail("Should have thrown an error");
+        } catch (error) {
+          expect(error).toBeInstanceOf(VikunjaApiError);
+          const apiError = error as VikunjaApiError;
+          expect(apiError.suggestion).toBe(
+            "Check that your VIKUNJA_API_TOKEN is valid and not expired"
+          );
+        }
+      });
+
+      it("should provide detailed error string via toDetailedString()", async () => {
+        mockFetch.mockResolvedValueOnce({
+          ok: false,
+          status: 404,
+          statusText: "Not Found",
+          headers: new Headers(),
+          json: async () => ({ message: "Task not found" }),
+        });
+
+        try {
+          await client.get("/tasks/123");
+          expect.fail("Should have thrown an error");
+        } catch (error) {
+          const apiError = error as VikunjaApiError;
+          const detailed = apiError.toDetailedString();
+          expect(detailed).toBe(
+            "[GET /tasks/123] 404: Task not found (The requested resource does not exist or has been deleted)"
+          );
+        }
       });
     });
 

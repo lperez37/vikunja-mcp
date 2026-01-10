@@ -15,9 +15,91 @@ export interface ApiResponse<T> {
   pagination?: PaginationInfo;
 }
 
-export interface ApiError {
+export interface ApiErrorDetails {
   code: number;
   message: string;
+}
+
+/**
+ * Custom error class for Vikunja API errors with enhanced details
+ */
+export class VikunjaApiError extends Error {
+  public readonly statusCode: number;
+  public readonly endpoint: string;
+  public readonly method: string;
+  public readonly suggestion?: string;
+
+  constructor(options: {
+    message: string;
+    statusCode: number;
+    endpoint: string;
+    method: string;
+    suggestion?: string;
+  }) {
+    super(options.message);
+    this.name = "VikunjaApiError";
+    this.statusCode = options.statusCode;
+    this.endpoint = options.endpoint;
+    this.method = options.method;
+    this.suggestion = options.suggestion;
+  }
+
+  /**
+   * Get a formatted error message with all details
+   */
+  toDetailedString(): string {
+    let details = `[${this.method} ${this.endpoint}] ${this.statusCode}: ${this.message}`;
+    if (this.suggestion) {
+      details += ` (${this.suggestion})`;
+    }
+    return details;
+  }
+}
+
+/**
+ * Get a helpful suggestion based on the HTTP status code
+ */
+function getErrorSuggestion(statusCode: number): string | undefined {
+  switch (statusCode) {
+    case 401:
+      return "Check that your VIKUNJA_API_TOKEN is valid and not expired";
+    case 403:
+      return "You may not have permission to access this resource";
+    case 404:
+      return "The requested resource does not exist or has been deleted";
+    case 429:
+      return "Rate limit exceeded. Please wait before making more requests";
+    case 500:
+      return "Server error. Please try again later or check Vikunja server logs";
+    case 502:
+    case 503:
+    case 504:
+      return "Server is temporarily unavailable. Please try again later";
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Build an enhanced error message
+ */
+function buildErrorMessage(
+  method: string,
+  path: string,
+  statusCode: number,
+  statusText: string,
+  apiMessage?: string
+): VikunjaApiError {
+  const baseMessage = apiMessage || `${statusCode} ${statusText}`;
+  const suggestion = getErrorSuggestion(statusCode);
+
+  return new VikunjaApiError({
+    message: baseMessage,
+    statusCode,
+    endpoint: path,
+    method,
+    suggestion,
+  });
 }
 
 // Retry configuration
@@ -151,16 +233,17 @@ export class VikunjaClient {
             continue;
           }
 
-          let errorMessage = `API request failed: ${response.status} ${response.statusText}`;
+          let apiMessage: string | undefined;
           try {
             const errorBody = await response.json();
             if (errorBody.message) {
-              errorMessage = errorBody.message;
+              apiMessage = errorBody.message;
             }
           } catch {
             // Ignore JSON parse errors for error responses
           }
-          throw new Error(errorMessage);
+
+          throw buildErrorMessage(method, path, response.status, response.statusText, apiMessage);
         }
 
         // Handle empty responses (204 No Content, etc.)
