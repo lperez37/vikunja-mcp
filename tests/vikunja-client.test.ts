@@ -329,13 +329,19 @@ describe("VikunjaClient", () => {
       });
 
       it("should throw error with status text when no message in response", async () => {
-        mockFetch.mockResolvedValueOnce({
+        // 5xx errors are retried, so mock all 4 attempts (initial + 3 retries)
+        const errorResponse = {
           ok: false,
           status: 500,
           statusText: "Internal Server Error",
           headers: new Headers(),
           json: async () => ({}),
-        });
+        };
+        mockFetch
+          .mockResolvedValueOnce(errorResponse)
+          .mockResolvedValueOnce(errorResponse)
+          .mockResolvedValueOnce(errorResponse)
+          .mockResolvedValueOnce(errorResponse);
 
         await expect(client.get("/projects")).rejects.toThrow(
           "API request failed: 500 Internal Server Error"
@@ -343,7 +349,8 @@ describe("VikunjaClient", () => {
       });
 
       it("should handle non-JSON error responses", async () => {
-        mockFetch.mockResolvedValueOnce({
+        // 5xx errors are retried, so mock all 4 attempts
+        const errorResponse = {
           ok: false,
           status: 502,
           statusText: "Bad Gateway",
@@ -351,17 +358,35 @@ describe("VikunjaClient", () => {
           json: async () => {
             throw new Error("Invalid JSON");
           },
-        });
+        };
+        mockFetch
+          .mockResolvedValueOnce(errorResponse)
+          .mockResolvedValueOnce(errorResponse)
+          .mockResolvedValueOnce(errorResponse)
+          .mockResolvedValueOnce(errorResponse);
 
         await expect(client.get("/projects")).rejects.toThrow(
           "API request failed: 502 Bad Gateway"
         );
       });
 
-      it("should propagate network errors", async () => {
-        mockFetch.mockRejectedValueOnce(new Error("Network error"));
+      it("should propagate network errors after retries", async () => {
+        // Network errors (TypeError) are retried
+        mockFetch
+          .mockRejectedValueOnce(new TypeError("Network error"))
+          .mockRejectedValueOnce(new TypeError("Network error"))
+          .mockRejectedValueOnce(new TypeError("Network error"))
+          .mockRejectedValueOnce(new TypeError("Network error"));
 
         await expect(client.get("/projects")).rejects.toThrow("Network error");
+      });
+
+      it("should not retry non-network errors", async () => {
+        // Regular errors (not TypeError) are not retried
+        mockFetch.mockRejectedValueOnce(new Error("Some other error"));
+
+        await expect(client.get("/projects")).rejects.toThrow("Some other error");
+        expect(mockFetch).toHaveBeenCalledTimes(1);
       });
 
       it("should handle 401 unauthorized", async () => {
@@ -423,6 +448,104 @@ describe("VikunjaClient", () => {
         const result = await client.delete("/tasks/1");
 
         expect(result.data).toEqual({});
+      });
+    });
+
+    describe("retry logic", () => {
+      it("should retry on 5xx errors and succeed", async () => {
+        // First two attempts fail with 503, third succeeds
+        mockFetch
+          .mockResolvedValueOnce({
+            ok: false,
+            status: 503,
+            statusText: "Service Unavailable",
+            headers: new Headers(),
+            json: async () => ({}),
+          })
+          .mockResolvedValueOnce({
+            ok: false,
+            status: 503,
+            statusText: "Service Unavailable",
+            headers: new Headers(),
+            json: async () => ({}),
+          })
+          .mockResolvedValueOnce({
+            ok: true,
+            status: 200,
+            headers: new Headers(),
+            json: async () => ({ id: 1, title: "Success" }),
+          });
+
+        const result = await client.get<{ id: number; title: string }>("/projects/1");
+
+        expect(mockFetch).toHaveBeenCalledTimes(3);
+        expect(result.data).toEqual({ id: 1, title: "Success" });
+      });
+
+      it("should retry on 429 rate limit errors", async () => {
+        // First attempt rate limited, second succeeds
+        mockFetch
+          .mockResolvedValueOnce({
+            ok: false,
+            status: 429,
+            statusText: "Too Many Requests",
+            headers: new Headers(),
+            json: async () => ({ message: "Rate limit exceeded" }),
+          })
+          .mockResolvedValueOnce({
+            ok: true,
+            status: 200,
+            headers: new Headers(),
+            json: async () => ({ success: true }),
+          });
+
+        const result = await client.get<{ success: boolean }>("/test");
+
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect(result.data).toEqual({ success: true });
+      });
+
+      it("should retry on network errors (TypeError) and succeed", async () => {
+        // First attempt fails with network error, second succeeds
+        mockFetch
+          .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+          .mockResolvedValueOnce({
+            ok: true,
+            status: 200,
+            headers: new Headers(),
+            json: async () => ({ recovered: true }),
+          });
+
+        const result = await client.get<{ recovered: boolean }>("/test");
+
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect(result.data).toEqual({ recovered: true });
+      });
+
+      it("should not retry on 4xx client errors", async () => {
+        mockFetch.mockResolvedValueOnce({
+          ok: false,
+          status: 400,
+          statusText: "Bad Request",
+          headers: new Headers(),
+          json: async () => ({ message: "Invalid input" }),
+        });
+
+        await expect(client.get("/projects")).rejects.toThrow("Invalid input");
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+      });
+
+      it("should not retry on 404 not found", async () => {
+        mockFetch.mockResolvedValueOnce({
+          ok: false,
+          status: 404,
+          statusText: "Not Found",
+          headers: new Headers(),
+          json: async () => ({ message: "Resource not found" }),
+        });
+
+        await expect(client.get("/projects/999")).rejects.toThrow("Resource not found");
+        expect(mockFetch).toHaveBeenCalledTimes(1);
       });
     });
 
