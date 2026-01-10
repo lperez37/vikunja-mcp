@@ -37,7 +37,10 @@ function formatResponse(data: unknown): { content: Array<{ type: "text"; text: s
 }
 
 // Helper to format error responses
-function formatError(error: unknown): { content: Array<{ type: "text"; text: string }>; isError: true } {
+function formatError(error: unknown): {
+  content: Array<{ type: "text"; text: string }>;
+  isError: true;
+} {
   const message = error instanceof Error ? error.message : String(error);
   return {
     content: [
@@ -172,7 +175,7 @@ server.tool(
     try {
       const client = getClient();
       const response = await client.delete<Message>(`/projects/${args.projectId}`);
-      return formatResponse({ success: true, message: "Project deleted", ...response.data });
+      return formatResponse({ ...response.data, success: true, message: "Project deleted" });
     } catch (error) {
       return formatError(error);
     }
@@ -187,11 +190,17 @@ server.tool(
   "tasks_list",
   "List all tasks (optionally filtered by project)",
   {
-    projectId: z.number().optional().describe("Filter by project ID (if not provided, returns all tasks)"),
+    projectId: z
+      .number()
+      .optional()
+      .describe("Filter by project ID (if not provided, returns all tasks)"),
     page: z.number().optional().describe("Page number for pagination (default: 1)"),
     perPage: z.number().optional().describe("Number of items per page (default: 50)"),
     search: z.string().optional().describe("Search tasks by text"),
-    sortBy: z.string().optional().describe("Sort field: id, title, done, due_date, priority, created, updated"),
+    sortBy: z
+      .string()
+      .optional()
+      .describe("Sort field: id, title, done, due_date, priority, created, updated"),
     orderBy: z.string().optional().describe("Sort order: asc or desc"),
     filter: z.string().optional().describe("Filter query (e.g., 'done = false')"),
   },
@@ -256,7 +265,10 @@ server.tool(
     projectId: z.number().describe("Project ID to create the task in (required)"),
     title: z.string().describe("Task title (required)"),
     description: z.string().optional().describe("Task description"),
-    dueDate: z.string().optional().describe("Due date (ISO 8601 format, e.g., '2024-12-31T23:59:59Z')"),
+    dueDate: z
+      .string()
+      .optional()
+      .describe("Due date (ISO 8601 format, e.g., '2024-12-31T23:59:59Z')"),
     startDate: z.string().optional().describe("Start date (ISO 8601 format)"),
     endDate: z.string().optional().describe("End date (ISO 8601 format)"),
     priority: z.number().optional().describe("Priority level (higher = more important)"),
@@ -346,7 +358,7 @@ server.tool(
     try {
       const client = getClient();
       const response = await client.delete<Message>(`/tasks/${args.taskId}`);
-      return formatResponse({ success: true, message: "Task deleted", ...response.data });
+      return formatResponse({ ...response.data, success: true, message: "Task deleted" });
     } catch (error) {
       return formatError(error);
     }
@@ -413,7 +425,7 @@ server.tool(
     try {
       const client = getClient();
       const response = await client.delete<Message>(`/labels/${args.labelId}`);
-      return formatResponse({ success: true, message: "Label deleted", ...response.data });
+      return formatResponse({ ...response.data, success: true, message: "Label deleted" });
     } catch (error) {
       return formatError(error);
     }
@@ -451,7 +463,11 @@ server.tool(
     try {
       const client = getClient();
       const response = await client.delete<Message>(`/tasks/${args.taskId}/labels/${args.labelId}`);
-      return formatResponse({ success: true, message: "Label removed from task", ...response.data });
+      return formatResponse({
+        ...response.data,
+        success: true,
+        message: "Label removed from task",
+      });
     } catch (error) {
       return formatError(error);
     }
@@ -550,8 +566,14 @@ server.tool(
   async (args) => {
     try {
       const client = getClient();
-      const response = await client.delete<Message>(`/tasks/${args.taskId}/assignees/${args.userId}`);
-      return formatResponse({ success: true, message: "Assignee removed from task", ...response.data });
+      const response = await client.delete<Message>(
+        `/tasks/${args.taskId}/assignees/${args.userId}`
+      );
+      return formatResponse({
+        ...response.data,
+        success: true,
+        message: "Assignee removed from task",
+      });
     } catch (error) {
       return formatError(error);
     }
@@ -602,7 +624,7 @@ server.tool(
       const response = await client.delete<Message>(
         `/tasks/${args.taskId}/relations/${args.relationKind}/${args.otherTaskId}`
       );
-      return formatResponse({ success: true, message: "Task relation removed", ...response.data });
+      return formatResponse({ ...response.data, success: true, message: "Task relation removed" });
     } catch (error) {
       return formatError(error);
     }
@@ -694,7 +716,7 @@ server.tool(
       const response = await client.delete<Message>(
         `/projects/${args.projectId}/views/${args.viewId}/buckets/${args.bucketId}`
       );
-      return formatResponse({ success: true, message: "Bucket deleted", ...response.data });
+      return formatResponse({ ...response.data, success: true, message: "Bucket deleted" });
     } catch (error) {
       return formatError(error);
     }

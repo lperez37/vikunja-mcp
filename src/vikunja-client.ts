@@ -53,7 +53,7 @@ export class VikunjaClient {
   ): Promise<ApiResponse<T>> {
     // Build URL with query parameters
     let url = `${this.baseUrl}/api/v1${path}`;
-    
+
     if (options.query) {
       const params = new URLSearchParams();
       for (const [key, value] of Object.entries(options.query)) {
@@ -114,7 +114,7 @@ export class VikunjaClient {
     }
 
     const data = await response.json();
-    
+
     return {
       data,
       pagination: pagination.totalPages !== null ? pagination : undefined,
@@ -122,7 +122,10 @@ export class VikunjaClient {
   }
 
   // Convenience methods
-  async get<T>(path: string, query?: Record<string, string | number | boolean | undefined>): Promise<ApiResponse<T>> {
+  async get<T>(
+    path: string,
+    query?: Record<string, string | number | boolean | undefined>
+  ): Promise<ApiResponse<T>> {
     return this.request<T>("GET", path, { query });
   }
 
