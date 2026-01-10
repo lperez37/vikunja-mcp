@@ -30,15 +30,15 @@ The Vikunja MCP server provides access to the full range of Vikunja's functional
 ### Option 1: NPM Installation
 
 ```bash
-npm install -g vikunja-mcp-server
+npm install -g vikunja-mcp
 ```
 
 ### Option 2: Manual Installation
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/vikunja-mcp-server.git
-cd vikunja-mcp-server
+git clone https://github.com/0xK3vin/vikunja-mcp.git
+cd vikunja-mcp
 ```
 
 2. Install dependencies:
@@ -80,7 +80,7 @@ Add the following configuration to your Claude Desktop config file:
   "mcpServers": {
     "vikunja": {
       "command": "npx",
-      "args": ["-y", "vikunja-mcp-server"],
+      "args": ["-y", "vikunja-mcp"],
       "env": {
         "VIKUNJA_URL": "https://try.vikunja.io",
         "VIKUNJA_API_TOKEN": "your_api_token_here"
@@ -97,7 +97,7 @@ If you installed manually, use this configuration instead:
   "mcpServers": {
     "vikunja": {
       "command": "node",
-      "args": ["/path/to/vikunja-mcp-server/dist/index.js"],
+      "args": ["/path/to/vikunja-mcp/dist/index.js"],
       "env": {
         "VIKUNJA_URL": "https://try.vikunja.io",
         "VIKUNJA_API_TOKEN": "your_api_token_here"
@@ -112,7 +112,7 @@ If you installed manually, use this configuration instead:
 For other MCP clients, configure them to run the server with the appropriate environment variables. For example:
 
 ```bash
-VIKUNJA_URL=https://try.vikunja.io VIKUNJA_API_TOKEN=your_token npx vikunja-mcp-server
+VIKUNJA_URL=https://try.vikunja.io VIKUNJA_API_TOKEN=your_token npx vikunja-mcp
 ```
 
 ### Testing the Connection
@@ -514,7 +514,7 @@ This will start the server with the MCP Inspector, allowing you to interact with
 ### Project Structure
 
 ```
-vikunja-mcp-server/
+vikunja-mcp/
 ├── src/
 │   ├── index.ts           # Main server implementation
 │   ├── vikunja-client.ts  # Vikunja API client
@@ -542,7 +542,7 @@ Contributions are welcome! Please follow these guidelines:
 
 ### Reporting Issues
 
-If you encounter any bugs or have feature requests, please [open an issue](https://github.com/yourusername/vikunja-mcp-server/issues) with:
+If you encounter any bugs or have feature requests, please [open an issue](https://github.com/0xK3vin/vikunja-mcp/issues) with:
 
 - A clear description of the problem or feature
 - Steps to reproduce (for bugs)
@@ -563,7 +563,7 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 - **Documentation**: [Vikunja API Docs](https://vikunja.io/docs/api-overview/)
 - **MCP Documentation**: [Model Context Protocol](https://modelcontextprotocol.io)
-- **Issues**: [GitHub Issues](https://github.com/yourusername/vikunja-mcp-server/issues)
+- **Issues**: [GitHub Issues](https://github.com/0xK3vin/vikunja-mcp/issues)
 
 ## Roadmap
 

@@ -1,5 +1,5 @@
 {
-  "name": "@YOUR_USERNAME/vikunja-mcp",
+  "name": "@0xK3vin/vikunja-mcp",
   "version": "1.0.0",
   "description": "MCP server for Vikunja task management",
   "type": "module",
@@ -21,15 +21,15 @@
     "productivity",
     "ai"
   ],
-  "author": "YOUR_NAME",
+  "author": "0xK3vin",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/YOUR_USERNAME/vikunja-mcp.git"
+    "url": "git+https://github.com/0xK3vin/vikunja-mcp.git"
   },
-  "homepage": "https://github.com/YOUR_USERNAME/vikunja-mcp#readme",
+  "homepage": "https://github.com/0xK3vin/vikunja-mcp#readme",
   "bugs": {
-    "url": "https://github.com/YOUR_USERNAME/vikunja-mcp/issues"
+    "url": "https://github.com/0xK3vin/vikunja-mcp/issues"
   },
   "engines": {
     "node": ">=18.0.0"
