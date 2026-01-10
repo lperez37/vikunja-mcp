@@ -1,0 +1,53 @@
+{
+  "name": "@YOUR_USERNAME/vikunja-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for Vikunja task management",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "vikunja-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "keywords": [
+    "mcp",
+    "vikunja",
+    "model-context-protocol",
+    "task-management",
+    "productivity",
+    "ai"
+  ],
+  "author": "YOUR_NAME",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YOUR_USERNAME/vikunja-mcp.git"
+  },
+  "homepage": "https://github.com/YOUR_USERNAME/vikunja-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/YOUR_USERNAME/vikunja-mcp/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "inspect": "npx @modelcontextprotocol/inspector tsx src/index.ts",
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^4.3.5"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/inspector": "^0.7.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
