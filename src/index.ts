@@ -259,6 +259,29 @@ server.tool(
 );
 
 server.tool(
+  "tasks_get_full",
+  "Get a task with full context: description, labels, assignees, AND comments. Use this before acting on, discussing, or updating a task.",
+  {
+    taskId: z.number().describe("The task ID"),
+  },
+  async (args) => {
+    try {
+      const client = getClient();
+      const [taskResponse, commentsResponse] = await Promise.all([
+        client.get<Task>(`/tasks/${args.taskId}`),
+        client.get<TaskComment[]>(`/tasks/${args.taskId}/comments`),
+      ]);
+      return formatResponse({
+        ...taskResponse.data,
+        comments: commentsResponse.data,
+      });
+    } catch (error) {
+      return formatError(error);
+    }
+  }
+);
+
+server.tool(
   "tasks_create",
   "Create a new task in a project",
   {
