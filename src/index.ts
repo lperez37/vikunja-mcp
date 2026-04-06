@@ -243,24 +243,7 @@ server.tool(
 
 server.tool(
   "tasks_get",
-  "Get a single task by ID",
-  {
-    taskId: z.number().describe("The task ID"),
-  },
-  async (args) => {
-    try {
-      const client = getClient();
-      const response = await client.get<Task>(`/tasks/${args.taskId}`);
-      return formatResponse(response.data);
-    } catch (error) {
-      return formatError(error);
-    }
-  }
-);
-
-server.tool(
-  "tasks_get_full",
-  "Get a task with full context: description, labels, assignees, AND comments. Use this before acting on, discussing, or updating a task.",
+  "Get a single task by ID with full context: description, labels, assignees, and comments",
   {
     taskId: z.number().describe("The task ID"),
   },
