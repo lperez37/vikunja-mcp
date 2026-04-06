@@ -1,0 +1,12 @@
+services:
+  mcp:
+    build: .
+    ports:
+      - "127.0.0.1:8847:8847"
+      - "100.119.183.110:8847:8847"
+    environment:
+      - MCP_TRANSPORT=http
+      - PORT=8847
+      - VIKUNJA_URL=${VIKUNJA_URL}
+      - VIKUNJA_API_TOKEN=${VIKUNJA_API_TOKEN}
+    restart: unless-stopped

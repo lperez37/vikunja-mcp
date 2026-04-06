@@ -2,6 +2,9 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { createServer } from "node:http";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { getClient } from "./vikunja-client.js";
 import type {
@@ -953,9 +956,78 @@ server.tool(
 
 // Start the server
 async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("Vikunja MCP server started");
+  const mode = process.env.MCP_TRANSPORT ?? "stdio";
+
+  if (mode === "http") {
+    const port = parseInt(process.env.PORT ?? "8847", 10);
+    const sessions = new Map<
+      string,
+      { transport: StreamableHTTPServerTransport; server: McpServer }
+    >();
+
+    const httpServer = createServer(async (req, res) => {
+      const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+
+      // Health check
+      if (req.method === "GET" && url.pathname === "/health") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({ status: "ok", transport: "streamable-http", sessions: sessions.size })
+        );
+        return;
+      }
+
+      // MCP endpoint
+      if (url.pathname === "/mcp") {
+        // Check for existing session
+        const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
+        if (sessionId && sessions.has(sessionId)) {
+          // Existing session
+          const session = sessions.get(sessionId)!;
+          await session.transport.handleRequest(req, res);
+          return;
+        }
+
+        // New session - only on POST (initialization)
+        if (req.method === "POST") {
+          const transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => randomUUID(),
+          });
+
+          transport.onclose = () => {
+            if (transport.sessionId) {
+              sessions.delete(transport.sessionId);
+            }
+          };
+
+          await server.connect(transport);
+          await transport.handleRequest(req, res);
+
+          if (transport.sessionId) {
+            sessions.set(transport.sessionId, { transport, server });
+          }
+          return;
+        }
+
+        // GET without session (SSE listener) or DELETE
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "No valid session. Send an initialize request first." }));
+        return;
+      }
+
+      res.writeHead(404);
+      res.end("Not found");
+    });
+
+    httpServer.listen(port, "0.0.0.0", () => {
+      console.error(`Vikunja MCP server (HTTP) listening on port ${port}`);
+    });
+  } else {
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    console.error("Vikunja MCP server (stdio) started");
+  }
 }
 
 main().catch((error) => {
