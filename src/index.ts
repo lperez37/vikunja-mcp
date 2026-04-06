@@ -231,7 +231,7 @@ server.tool(
         );
       } else {
         // Get all tasks
-        response = await client.get<Task[]>("/tasks/all", query);
+        response = await client.get<Task[]>("/tasks", query);
       }
 
       return formatResponse({ tasks: response.data, pagination: response.pagination });
@@ -819,6 +819,126 @@ server.tool(
         per_page: args.perPage,
       });
       return formatResponse({ notifications: response.data, pagination: response.pagination });
+    } catch (error) {
+      return formatError(error);
+    }
+  }
+);
+
+// ============================================================================
+// Complete Task (Shortcut)
+// ============================================================================
+
+server.tool(
+  "tasks_complete",
+  "Mark a task as done (shortcut for tasks_update with done=true)",
+  {
+    taskId: z.number().describe("The task ID to mark as done"),
+  },
+  async (args) => {
+    try {
+      const client = getClient();
+      const response = await client.post<Task>(`/tasks/${args.taskId}`, { done: true });
+      return formatResponse({
+        id: response.data.id,
+        title: response.data.title,
+        done: response.data.done,
+        message: "Task marked as done",
+      });
+    } catch (error) {
+      return formatError(error);
+    }
+  }
+);
+
+// ============================================================================
+// Daily Summary (Composite)
+// ============================================================================
+
+server.tool(
+  "daily_summary",
+  "Get a daily overview: overdue tasks + tasks due today, grouped by project. Shows priorities and description previews.",
+  {},
+  async () => {
+    try {
+      const client = getClient();
+
+      // Fetch all incomplete tasks sorted by due date
+      const tasksResponse = await client.get<Task[]>("/tasks", {
+        filter: "done = false",
+        sort_by: "due_date",
+        order_by: "asc",
+        per_page: 200,
+      });
+
+      // Fetch projects for grouping
+      const projectsResponse = await client.get<Project[]>("/projects");
+      const projectMap = new Map<number, string>();
+      for (const p of projectsResponse.data) {
+        projectMap.set(p.id, p.title);
+      }
+
+      const now = new Date();
+      const todayStr = now.toISOString().split("T")[0]; // YYYY-MM-DD
+
+      const overdue: Task[] = [];
+      const dueToday: Task[] = [];
+      const upcoming: Task[] = [];
+      const noDueDate: Task[] = [];
+
+      for (const task of tasksResponse.data) {
+        if (!task.due_date || task.due_date === "0001-01-01T00:00:00Z") {
+          noDueDate.push(task);
+          continue;
+        }
+        const dueDateStr = task.due_date.split("T")[0];
+        if (dueDateStr < todayStr) {
+          overdue.push(task);
+        } else if (dueDateStr === todayStr) {
+          dueToday.push(task);
+        } else {
+          upcoming.push(task);
+        }
+      }
+
+      const priorityLabels: Record<number, string> = {
+        0: "unset",
+        1: "low",
+        2: "medium",
+        3: "high",
+        4: "urgent",
+        5: "do-now",
+      };
+
+      const formatTask = (task: Task) => ({
+        id: task.id,
+        title: task.title,
+        priority: priorityLabels[task.priority ?? 0] ?? "unset",
+        due_date: task.due_date,
+        project: projectMap.get(task.project_id ?? 0) ?? "Unknown",
+        has_description: !!(task.description && task.description.length > 0),
+        description_preview: task.description ? task.description.slice(0, 120) : null,
+      });
+
+      return formatResponse({
+        date: todayStr,
+        summary: {
+          overdue: overdue.length,
+          due_today: dueToday.length,
+          upcoming: upcoming.length,
+          no_due_date: noDueDate.length,
+          total_incomplete: tasksResponse.data.length,
+        },
+        overdue: overdue.map(formatTask),
+        due_today: dueToday.map(formatTask),
+        upcoming_next_7_days: upcoming
+          .filter((t) => {
+            const d = new Date(t.due_date!);
+            const diff = (d.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
+            return diff <= 7;
+          })
+          .map(formatTask),
+      });
     } catch (error) {
       return formatError(error);
     }

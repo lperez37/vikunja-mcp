@@ -24,6 +24,9 @@ yarn-error.log*
 *.swp
 *.swo
 
+# MCP config (contains API tokens)
+.mcp.json
+
 # npm cache
 .npm
 .eslintcache
