@@ -39,6 +39,16 @@ function formatResponse(data: unknown): { content: Array<{ type: "text"; text: s
   };
 }
 
+// Helper to prefix task ID with # for easy reference in conversation
+function prefixTaskId(task: Task): Record<string, unknown> {
+  return { ...task, id: `#${task.id}` };
+}
+
+// Helper to prefix task IDs in an array
+function prefixTaskIds(tasks: Task[]): Array<Record<string, unknown>> {
+  return tasks.map(prefixTaskId);
+}
+
 // Helper to format error responses
 function formatError(error: unknown): {
   content: Array<{ type: "text"; text: string }>;
@@ -237,7 +247,10 @@ server.tool(
         response = await client.get<Task[]>("/tasks", query);
       }
 
-      return formatResponse({ tasks: response.data, pagination: response.pagination });
+      return formatResponse({
+        tasks: prefixTaskIds(response.data),
+        pagination: response.pagination,
+      });
     } catch (error) {
       return formatError(error);
     }
@@ -258,7 +271,7 @@ server.tool(
         client.get<TaskComment[]>(`/tasks/${args.taskId}/comments`),
       ]);
       return formatResponse({
-        ...taskResponse.data,
+        ...prefixTaskId(taskResponse.data),
         comments: commentsResponse.data,
       });
     } catch (error) {
@@ -309,7 +322,7 @@ server.tool(
       }
 
       const response = await client.put<Task>(`/projects/${args.projectId}/tasks`, body);
-      return formatResponse(response.data);
+      return formatResponse(prefixTaskId(response.data));
     } catch (error) {
       return formatError(error);
     }
@@ -350,7 +363,7 @@ server.tool(
       if (args.isFavorite !== undefined) body.is_favorite = args.isFavorite;
 
       const response = await client.post<Task>(`/tasks/${args.taskId}`, body);
-      return formatResponse(response.data);
+      return formatResponse(prefixTaskId(response.data));
     } catch (error) {
       return formatError(error);
     }
@@ -752,7 +765,7 @@ server.tool(
           position: args.position,
         }
       );
-      return formatResponse(response.data);
+      return formatResponse(prefixTaskId(response.data));
     } catch (error) {
       return formatError(error);
     }
@@ -849,7 +862,7 @@ server.tool(
       const client = getClient();
       const response = await client.post<Task>(`/tasks/${args.taskId}`, { done: true });
       return formatResponse({
-        id: response.data.id,
+        id: `#${response.data.id}`,
         title: response.data.title,
         done: response.data.done,
         message: "Task marked as done",
@@ -920,7 +933,7 @@ server.tool(
       };
 
       const formatTask = (task: Task) => ({
-        id: task.id,
+        id: `#${task.id}`,
         title: task.title,
         priority: priorityLabels[task.priority ?? 0] ?? "unset",
         due_date: task.due_date,
@@ -971,9 +984,7 @@ async function main() {
       // Health check
       if (req.method === "GET" && url.pathname === "/health") {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify({ status: "ok", transport: "streamable-http", sessions: sessions.size })
-        );
+        res.end(JSON.stringify({ status: "ok", transport: "http", sessions: sessions.size }));
         return;
       }
 
