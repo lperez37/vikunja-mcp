@@ -49,6 +49,48 @@ function prefixTaskIds(tasks: Task[]): Array<Record<string, unknown>> {
   return tasks.map(prefixTaskId);
 }
 
+// Fields on a Task response that must not round-trip back as updates:
+// nested collections, relations, computed values, and server timestamps.
+// Sending these in a POST /tasks/:id body can corrupt the task's relations or
+// get rejected by validation.
+const TASK_UPDATE_STRIP_FIELDS = [
+  "assignees",
+  "labels",
+  "attachments",
+  "reminders",
+  "related_tasks",
+  "created_by",
+  "subscription",
+  "reactions",
+  "comments",
+  "comment_count",
+  "buckets",
+  "created",
+  "updated",
+  "done_at",
+  "is_unread",
+  "identifier",
+  "index",
+] as const;
+
+// Build a full-object update body by stripping read-only fields from the
+// current task, then overlaying only the caller-provided updates. Used to
+// work around Vikunja's POST /tasks/:id, which zeroes any field absent from
+// the body (see tasks_update / tasks_complete handlers).
+function buildTaskUpdateBody(
+  current: Task,
+  updates: Record<string, unknown>
+): Record<string, unknown> {
+  const base = { ...(current as unknown as Record<string, unknown>) };
+  for (const field of TASK_UPDATE_STRIP_FIELDS) {
+    delete base[field];
+  }
+  for (const [key, value] of Object.entries(updates)) {
+    if (value !== undefined) base[key] = value;
+  }
+  return base;
+}
+
 // Helper to format error responses
 function formatError(error: unknown): {
   content: Array<{ type: "text"; text: string }>;
@@ -356,18 +398,26 @@ function createMcpServer(): McpServer {
     async (args) => {
       try {
         const client = getClient();
-        const body: Record<string, unknown> = {};
-        if (args.title !== undefined) body.title = args.title;
-        if (args.description !== undefined) body.description = args.description;
-        if (args.dueDate !== undefined) body.due_date = args.dueDate;
-        if (args.startDate !== undefined) body.start_date = args.startDate;
-        if (args.endDate !== undefined) body.end_date = args.endDate;
-        if (args.priority !== undefined) body.priority = args.priority;
-        if (args.done !== undefined) body.done = args.done;
-        if (args.color !== undefined) body.hex_color = args.color;
-        if (args.percentDone !== undefined) body.percent_done = args.percentDone;
-        if (args.projectId !== undefined) body.project_id = args.projectId;
-        if (args.isFavorite !== undefined) body.is_favorite = args.isFavorite;
+
+        // Vikunja's POST /tasks/:id deserialises the body into its Task struct
+        // and writes it back wholesale — any field absent from the body gets
+        // reset to the Go zero value (empty string, 0, false). To implement
+        // partial updates safely we fetch the current task first and merge
+        // the caller's changes onto it, then send the full object.
+        const current = (await client.get<Task>(`/tasks/${args.taskId}`)).data;
+        const body = buildTaskUpdateBody(current, {
+          title: args.title,
+          description: args.description,
+          due_date: args.dueDate,
+          start_date: args.startDate,
+          end_date: args.endDate,
+          priority: args.priority,
+          done: args.done,
+          hex_color: args.color,
+          percent_done: args.percentDone,
+          project_id: args.projectId,
+          is_favorite: args.isFavorite,
+        });
 
         const response = await client.post<Task>(`/tasks/${args.taskId}`, body);
         return formatResponse(prefixTaskId(response.data));
@@ -710,7 +760,11 @@ function createMcpServer(): McpServer {
     async (args) => {
       try {
         const client = getClient();
-        const response = await client.post<Task>(`/tasks/${args.taskId}`, { done: true });
+        // Same merge-with-current trick as tasks_update — Vikunja's POST
+        // /tasks/:id zeroes any unsent field, so we send the full object.
+        const current = (await client.get<Task>(`/tasks/${args.taskId}`)).data;
+        const body = buildTaskUpdateBody(current, { done: true });
+        const response = await client.post<Task>(`/tasks/${args.taskId}`, body);
         return formatResponse({
           id: `#${response.data.id}`,
           title: response.data.title,

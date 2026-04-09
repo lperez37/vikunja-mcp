@@ -409,9 +409,26 @@ describe("MCP Tool Handlers", () => {
   });
 
   describe("tasks_update", () => {
-    it("should update a task", async () => {
-      const mockTask = { id: 1, title: "Updated Task", done: true };
-      mockPost.mockResolvedValueOnce({ data: mockTask });
+    // Note: tasks_update fetches the current task first (GET) and merges the
+    // caller's changes onto it before POSTing the full object. This is a
+    // workaround for Vikunja's POST /tasks/:id zeroing any field absent from
+    // the body. See buildTaskUpdateBody() / tasks_update handler in index.ts.
+
+    it("should merge updates onto the current task to avoid zeroing fields", async () => {
+      const currentTask = {
+        id: 1,
+        title: "Old Title",
+        description: "Old description",
+        done: false,
+        priority: 1,
+        percent_done: 0,
+        project_id: 1,
+        is_favorite: false,
+        due_date: "2024-11-01T00:00:00Z",
+      };
+      const updatedTask = { ...currentTask, title: "Updated Task", done: true, priority: 5 };
+      mockGet.mockResolvedValueOnce({ data: currentTask });
+      mockPost.mockResolvedValueOnce({ data: updatedTask });
 
       const response = await callTool("tasks_update", {
         taskId: 1,
@@ -423,17 +440,31 @@ describe("MCP Tool Handlers", () => {
       });
       const data = parseResponse(response);
 
+      expect(mockGet).toHaveBeenCalledWith("/tasks/1");
+      // Body must preserve fields not being updated (description, due_date,
+      // percent_done) AND apply the caller's updates.
       expect(mockPost).toHaveBeenCalledWith("/tasks/1", {
+        id: 1,
         title: "Updated Task",
+        description: "Old description",
         done: true,
         priority: 5,
+        percent_done: 0,
         project_id: 2,
         is_favorite: true,
+        due_date: "2024-11-01T00:00:00Z",
       });
-      expect(data).toEqual(mockTask);
+      expect(data.title).toBe("Updated Task");
     });
 
-    it("should update task with all date fields", async () => {
+    it("should update task with all date fields, preserving other fields", async () => {
+      const currentTask = {
+        id: 1,
+        title: "Some Task",
+        done: false,
+        priority: 3,
+      };
+      mockGet.mockResolvedValueOnce({ data: currentTask });
       mockPost.mockResolvedValueOnce({ data: { id: 1 } });
 
       await callTool("tasks_update", {
@@ -446,7 +477,12 @@ describe("MCP Tool Handlers", () => {
         description: "Updated description",
       });
 
+      expect(mockGet).toHaveBeenCalledWith("/tasks/1");
       expect(mockPost).toHaveBeenCalledWith("/tasks/1", {
+        id: 1,
+        title: "Some Task",
+        done: false,
+        priority: 3,
         due_date: "2024-12-31T23:59:59Z",
         start_date: "2024-12-01T00:00:00Z",
         end_date: "2024-12-15T00:00:00Z",
@@ -454,6 +490,88 @@ describe("MCP Tool Handlers", () => {
         percent_done: 0.75,
         description: "Updated description",
       });
+    });
+
+    it("should strip read-only / nested fields from the update body", async () => {
+      const currentTask = {
+        id: 1,
+        title: "Task with relations",
+        done: false,
+        assignees: [{ id: 1 }],
+        labels: [{ id: 2 }],
+        attachments: [],
+        reminders: [],
+        related_tasks: {},
+        created_by: { id: 1 },
+        subscription: null,
+        reactions: {},
+        comments: [],
+        comment_count: 0,
+        buckets: [],
+        created: "2024-01-01T00:00:00Z",
+        updated: "2024-01-02T00:00:00Z",
+        done_at: "0001-01-01T00:00:00Z",
+        is_unread: false,
+        identifier: "PROJ-1",
+        index: 42,
+      };
+      mockGet.mockResolvedValueOnce({ data: currentTask });
+      mockPost.mockResolvedValueOnce({ data: { id: 1, title: "Task with relations", done: true } });
+
+      await callTool("tasks_update", { taskId: 1, done: true });
+
+      const [, body] = mockPost.mock.calls[0];
+      // None of these should round-trip as updates
+      expect(body).not.toHaveProperty("assignees");
+      expect(body).not.toHaveProperty("labels");
+      expect(body).not.toHaveProperty("attachments");
+      expect(body).not.toHaveProperty("reminders");
+      expect(body).not.toHaveProperty("related_tasks");
+      expect(body).not.toHaveProperty("created_by");
+      expect(body).not.toHaveProperty("subscription");
+      expect(body).not.toHaveProperty("reactions");
+      expect(body).not.toHaveProperty("comments");
+      expect(body).not.toHaveProperty("comment_count");
+      expect(body).not.toHaveProperty("buckets");
+      expect(body).not.toHaveProperty("created");
+      expect(body).not.toHaveProperty("updated");
+      expect(body).not.toHaveProperty("done_at");
+      expect(body).not.toHaveProperty("is_unread");
+      expect(body).not.toHaveProperty("identifier");
+      expect(body).not.toHaveProperty("index");
+      // But the core editable fields and the update should be there
+      expect(body).toMatchObject({ id: 1, title: "Task with relations", done: true });
+    });
+  });
+
+  describe("tasks_complete", () => {
+    it("should mark a task as done by merging with current task state", async () => {
+      const currentTask = {
+        id: 1,
+        title: "Task to complete",
+        description: "Important work",
+        done: false,
+        priority: 3,
+      };
+      mockGet.mockResolvedValueOnce({ data: currentTask });
+      mockPost.mockResolvedValueOnce({
+        data: { ...currentTask, done: true },
+      });
+
+      const response = await callTool("tasks_complete", { taskId: 1 });
+      const data = parseResponse(response);
+
+      expect(mockGet).toHaveBeenCalledWith("/tasks/1");
+      // Must preserve description & priority rather than zeroing them
+      expect(mockPost).toHaveBeenCalledWith("/tasks/1", {
+        id: 1,
+        title: "Task to complete",
+        description: "Important work",
+        done: true,
+        priority: 3,
+      });
+      expect(data.done).toBe(true);
+      expect(data.message).toBe("Task marked as done");
     });
   });
 
