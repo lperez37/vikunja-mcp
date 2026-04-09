@@ -32,9 +32,16 @@ function formatResponse(data: unknown): { content: Array<{ type: "text"; text: s
   };
 }
 
-// Helper to prefix task ID with # for easy reference in conversation
+// Helper to prefix task ID with # for easy reference in conversation.
+// Strips `identifier` (project-scoped index like "PROJ-42") and `index` to
+// avoid confusion with the global `id` which is the canonical reference.
 function prefixTaskId(task: Task): Record<string, unknown> {
-  return { ...task, id: `#${task.id}` };
+  const {
+    identifier: _identifier,
+    index: _index,
+    ...rest
+  } = task as unknown as Record<string, unknown>;
+  return { ...rest, id: `#${task.id}` };
 }
 
 // Helper to prefix task IDs in an array
