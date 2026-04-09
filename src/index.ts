@@ -4,7 +4,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createServer } from "node:http";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
+import { Buffer } from "node:buffer";
 import { z } from "zod";
 import { getClient } from "./vikunja-client.js";
 import type {
@@ -880,23 +881,65 @@ async function main() {
 
   if (mode === "http") {
     const port = parseInt(process.env.PORT ?? "8847", 10);
+    const authToken = process.env.MCP_AUTH_TOKEN;
     const sessions = new Map<
       string,
       { transport: StreamableHTTPServerTransport; server: McpServer }
     >();
 
+    if (authToken) {
+      console.error(
+        `Vikunja MCP server (HTTP) auth enabled — requests to /mcp must present Authorization: Bearer <token>`
+      );
+    } else {
+      console.error(
+        `Vikunja MCP server (HTTP) auth DISABLED — MCP_AUTH_TOKEN not set. Anyone reaching the port can call tools.`
+      );
+    }
+
+    // Timing-safe comparison of the caller's bearer token against the
+    // configured MCP_AUTH_TOKEN. Returns false if either value is missing
+    // or if lengths differ, without leaking which was the cause.
+    const isAuthorized = (headerValue: string | undefined): boolean => {
+      if (!authToken) return true;
+      if (!headerValue) return false;
+      const match = headerValue.match(/^Bearer\s+(.+)$/i);
+      if (!match) return false;
+      const provided = Buffer.from(match[1], "utf8");
+      const expected = Buffer.from(authToken, "utf8");
+      if (provided.length !== expected.length) return false;
+      return timingSafeEqual(provided, expected);
+    };
+
     const httpServer = createServer(async (req, res) => {
       const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
 
-      // Health check
+      // Health check — intentionally unauthenticated so external monitors
+      // can probe liveness without holding the shared secret.
       if (req.method === "GET" && url.pathname === "/health") {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ status: "ok", transport: "http", sessions: sessions.size }));
+        res.end(
+          JSON.stringify({
+            status: "ok",
+            transport: "http",
+            sessions: sessions.size,
+            auth: authToken ? "required" : "disabled",
+          })
+        );
         return;
       }
 
       // MCP endpoint
       if (url.pathname === "/mcp") {
+        if (!isAuthorized(req.headers.authorization)) {
+          res.writeHead(401, {
+            "Content-Type": "application/json",
+            "WWW-Authenticate": 'Bearer realm="vikunja-mcp"',
+          });
+          res.end(JSON.stringify({ error: "Unauthorized" }));
+          return;
+        }
+
         // Check for existing session
         const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
