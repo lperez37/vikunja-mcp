@@ -109,12 +109,47 @@ function formatError(error: unknown): {
   };
 }
 
+// Static project catalog surfaced via MCP `instructions` so clients don't
+// need to call `projects_list` to discover the routing destinations for new
+// tasks. Update this block when a new top-level project is added in Vikunja.
+//
+// Inbox (id=1) is the standard default — file there unless the task clearly
+// matches another project's scope.
+const SERVER_INSTRUCTIONS = `Vikunja task management for Luis. Use these tools to create, query, update, and complete tasks.
+
+## Projects (use IDs directly — do NOT call \`projects_list\` for routing)
+
+| ID | Project | Use when… |
+|----|---------|-----------|
+| 1  | **Inbox** (default) | Catch-all for personal, homelab/server, tech, errands, and anything that doesn't fit another project. **File new tasks here unless they clearly match another project below.** |
+| 3  | House | Home renovations and physical house improvements only (painting, furniture, repairs, garden, appliances). NOT for tech/server/homelab. |
+| 4  | Vivacity BV | Vivacity BV business operations, administration, finance, and company matters. |
+| 6  | Everfield | Tasks related to the Everfield career/work project. |
+
+Only call \`projects_list\` when the user explicitly asks to see all projects, wants archived projects, or you suspect a new project was added that isn't in the table above.
+
+## Task IDs
+
+Tasks return numeric IDs prefixed with \`#\` (e.g. \`#325\`). Use these for direct references in conversations and for follow-up tool calls (\`tasks_update\`, \`tasks_complete\`, \`tasks_delete\`).
+
+## Common patterns
+
+- Due dates: ISO 8601 (\`2026-05-31T21:59:59Z\`). Luis is in NL (CEST = UTC+2 in summer, CET = UTC+1 in winter), so end-of-day local typically encodes as \`T21:59:59Z\` (summer) or \`T22:59:59Z\` (winter).
+- Priority: integer, higher = more important. 3 is a reasonable medium default; reserve 5 for genuinely urgent.
+- Markdown is supported in task descriptions.
+`;
+
 // Factory: create a new McpServer with all tools registered
 function createMcpServer(): McpServer {
-  const server = new McpServer({
-    name: "vikunja",
-    version: "1.0.0",
-  });
+  const server = new McpServer(
+    {
+      name: "vikunja",
+      version: "1.0.0",
+    },
+    {
+      instructions: SERVER_INSTRUCTIONS,
+    }
+  );
 
   // ============================================================================
   // Ping Tool (for testing)
