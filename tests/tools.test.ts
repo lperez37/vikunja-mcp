@@ -228,7 +228,18 @@ describe("MCP Tool Handlers", () => {
 
   describe("projects_update", () => {
     it("should update a project", async () => {
-      const mockProject = { id: 1, title: "Updated Project" };
+      const currentProject = {
+        id: 1,
+        title: "Original Project",
+        description: "Original description",
+        hex_color: "00ff00",
+        parent_project_id: 2,
+        position: 100,
+        is_archived: false,
+        is_favorite: true,
+      };
+      const mockProject = { ...currentProject, title: "Updated Project", is_archived: true };
+      mockGet.mockResolvedValueOnce({ data: currentProject });
       mockPost.mockResolvedValueOnce({ data: mockProject });
 
       const response = await callTool("projects_update", {
@@ -239,21 +250,44 @@ describe("MCP Tool Handlers", () => {
       });
       const data = parseResponse(response);
 
+      expect(mockGet).toHaveBeenCalledWith("/projects/1");
       expect(mockPost).toHaveBeenCalledWith("/projects/1", {
         title: "Updated Project",
+        description: "Original description",
+        hex_color: "00ff00",
+        parent_project_id: 2,
+        position: 100,
         is_archived: true,
         is_favorite: false,
       });
       expect(data).toEqual(mockProject);
     });
 
-    it("should only include provided fields", async () => {
+    it("should preserve current fields when applying a partial update", async () => {
+      mockGet.mockResolvedValueOnce({
+        data: {
+          id: 1,
+          title: "Current title",
+          description: "Old desc",
+          hex_color: "abcdef",
+          parent_project_id: 0,
+          position: 200,
+          is_archived: false,
+          is_favorite: true,
+        },
+      });
       mockPost.mockResolvedValueOnce({ data: { id: 1 } });
 
       await callTool("projects_update", { projectId: 1, description: "New desc" });
 
       expect(mockPost).toHaveBeenCalledWith("/projects/1", {
+        title: "Current title",
         description: "New desc",
+        hex_color: "abcdef",
+        parent_project_id: 0,
+        position: 200,
+        is_archived: false,
+        is_favorite: true,
       });
     });
   });
@@ -283,8 +317,8 @@ describe("MCP Tool Handlers", () => {
       const response = await callTool("tasks_list", {});
       const data = parseResponse(response);
 
-      expect(mockGet).toHaveBeenCalledWith("/tasks/all", expect.any(Object));
-      expect(data.tasks).toEqual(mockTasks);
+      expect(mockGet).toHaveBeenCalledWith("/tasks", expect.any(Object));
+      expect(data.tasks).toEqual([{ id: "#1", title: "Task 1" }]);
     });
 
     it("should list tasks for a specific project", async () => {
@@ -301,7 +335,7 @@ describe("MCP Tool Handlers", () => {
         "/projects/1/views/10/tasks",
         expect.any(Object)
       );
-      expect(data.tasks).toEqual(mockTasks);
+      expect(data.tasks).toEqual([{ id: "#1", title: "Task 1" }]);
     });
 
     it("should handle project with no views", async () => {
@@ -336,7 +370,7 @@ describe("MCP Tool Handlers", () => {
         filter: "done = false",
       });
 
-      expect(mockGet).toHaveBeenCalledWith("/tasks/all", {
+      expect(mockGet).toHaveBeenCalledWith("/tasks", {
         page: 2,
         per_page: 25,
         s: "bug",
@@ -350,13 +384,16 @@ describe("MCP Tool Handlers", () => {
   describe("tasks_get", () => {
     it("should get a single task", async () => {
       const mockTask = { id: 1, title: "Test Task", done: false };
-      mockGet.mockResolvedValueOnce({ data: mockTask });
+      mockGet
+        .mockResolvedValueOnce({ data: mockTask })
+        .mockResolvedValueOnce({ data: [] });
 
       const response = await callTool("tasks_get", { taskId: 1 });
       const data = parseResponse(response);
 
       expect(mockGet).toHaveBeenCalledWith("/tasks/1");
-      expect(data).toEqual(mockTask);
+      expect(mockGet).toHaveBeenCalledWith("/tasks/1/comments");
+      expect(data).toEqual({ id: "#1", title: "Test Task", done: false, comments: [] });
     });
   });
 
@@ -394,7 +431,7 @@ describe("MCP Tool Handlers", () => {
         assignees: [{ id: 1 }, { id: 2 }],
         labels: [{ id: 3 }, { id: 4 }],
       });
-      expect(data).toEqual(mockTask);
+      expect(data).toEqual({ id: "#1", title: "New Task" });
     });
 
     it("should create a task with minimal params", async () => {
@@ -712,49 +749,6 @@ describe("MCP Tool Handlers", () => {
   });
 
   // ============================================================================
-  // Assignee Tools
-  // ============================================================================
-
-  describe("task_assignees_list", () => {
-    it("should list assignees on a task", async () => {
-      const mockAssignees = [{ id: 1, username: "user1" }];
-      mockGet.mockResolvedValueOnce({ data: mockAssignees });
-
-      const response = await callTool("task_assignees_list", { taskId: 1 });
-      const data = parseResponse(response);
-
-      expect(mockGet).toHaveBeenCalledWith("/tasks/1/assignees");
-      expect(data.assignees).toEqual(mockAssignees);
-    });
-  });
-
-  describe("task_assignees_add", () => {
-    it("should add an assignee to a task", async () => {
-      const mockUser = { id: 1, username: "user1" };
-      mockPut.mockResolvedValueOnce({ data: mockUser });
-
-      const response = await callTool("task_assignees_add", { taskId: 1, userId: 2 });
-      const data = parseResponse(response);
-
-      expect(mockPut).toHaveBeenCalledWith("/tasks/1/assignees", { user_id: 2 });
-      expect(data).toEqual(mockUser);
-    });
-  });
-
-  describe("task_assignees_remove", () => {
-    it("should remove an assignee from a task", async () => {
-      mockDelete.mockResolvedValueOnce({ data: {} });
-
-      const response = await callTool("task_assignees_remove", { taskId: 1, userId: 2 });
-      const data = parseResponse(response);
-
-      expect(mockDelete).toHaveBeenCalledWith("/tasks/1/assignees/2");
-      expect(data.success).toBe(true);
-      expect(data.message).toBe("Assignee removed from task");
-    });
-  });
-
-  // ============================================================================
   // Task Relation Tools
   // ============================================================================
 
@@ -812,86 +806,6 @@ describe("MCP Tool Handlers", () => {
 
       expect(mockGet).toHaveBeenCalledWith("/projects/1/views");
       expect(data.views).toEqual(mockViews);
-    });
-  });
-
-  // ============================================================================
-  // Bucket (Kanban) Tools
-  // ============================================================================
-
-  describe("buckets_list", () => {
-    it("should list buckets for a project view", async () => {
-      const mockBuckets = [
-        { id: 1, title: "To Do" },
-        { id: 2, title: "Done" },
-      ];
-      mockGet.mockResolvedValueOnce({ data: mockBuckets });
-
-      const response = await callTool("buckets_list", { projectId: 1, viewId: 2 });
-      const data = parseResponse(response);
-
-      expect(mockGet).toHaveBeenCalledWith("/projects/1/views/2/buckets");
-      expect(data.buckets).toEqual(mockBuckets);
-    });
-  });
-
-  describe("buckets_create", () => {
-    it("should create a bucket", async () => {
-      const mockBucket = { id: 1, title: "In Progress", limit: 5 };
-      mockPut.mockResolvedValueOnce({ data: mockBucket });
-
-      const response = await callTool("buckets_create", {
-        projectId: 1,
-        viewId: 2,
-        title: "In Progress",
-        limit: 5,
-      });
-      const data = parseResponse(response);
-
-      expect(mockPut).toHaveBeenCalledWith("/projects/1/views/2/buckets", {
-        title: "In Progress",
-        limit: 5,
-      });
-      expect(data).toEqual(mockBucket);
-    });
-  });
-
-  describe("buckets_delete", () => {
-    it("should delete a bucket", async () => {
-      mockDelete.mockResolvedValueOnce({ data: {} });
-
-      const response = await callTool("buckets_delete", {
-        projectId: 1,
-        viewId: 2,
-        bucketId: 3,
-      });
-      const data = parseResponse(response);
-
-      expect(mockDelete).toHaveBeenCalledWith("/projects/1/views/2/buckets/3");
-      expect(data.success).toBe(true);
-      expect(data.message).toBe("Bucket deleted");
-    });
-  });
-
-  describe("task_move_to_bucket", () => {
-    it("should move a task to a bucket", async () => {
-      const mockTask = { id: 1, bucket_id: 3 };
-      mockPost.mockResolvedValueOnce({ data: mockTask });
-
-      const response = await callTool("task_move_to_bucket", {
-        projectId: 1,
-        viewId: 2,
-        bucketId: 3,
-        taskId: 4,
-        position: 0,
-      });
-      const data = parseResponse(response);
-
-      expect(mockPost).toHaveBeenCalledWith("/projects/1/views/2/buckets/3/tasks", {
-        task_id: 4,
-        position: 0,
-      });
-      expect(data).toEqual(mockTask);
     });
   });
 

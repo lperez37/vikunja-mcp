@@ -248,12 +248,16 @@ function createMcpServer(): McpServer {
     async (args) => {
       try {
         const client = getClient();
-        const body: Record<string, unknown> = {};
-        if (args.title !== undefined) body.title = args.title;
-        if (args.description !== undefined) body.description = args.description;
-        if (args.color !== undefined) body.hex_color = args.color;
-        if (args.isArchived !== undefined) body.is_archived = args.isArchived;
-        if (args.isFavorite !== undefined) body.is_favorite = args.isFavorite;
+        const current = (await client.get<Project>(`/projects/${args.projectId}`)).data;
+        const body: Record<string, unknown> = {
+          title: args.title ?? current.title,
+          description: args.description ?? current.description,
+          hex_color: args.color ?? current.hex_color,
+          parent_project_id: current.parent_project_id,
+          position: current.position,
+          is_archived: args.isArchived ?? current.is_archived,
+          is_favorite: args.isFavorite ?? current.is_favorite,
+        };
 
         const response = await client.post<Project>(`/projects/${args.projectId}`, body);
         return formatResponse(response.data);
