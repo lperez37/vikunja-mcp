@@ -8,6 +8,7 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { z } from "zod";
 import { getClient } from "./vikunja-client.js";
+import { expireIdleSessions, type SessionEntry } from "./session-registry.js";
 import type {
   Project,
   Task,
@@ -921,10 +922,16 @@ async function main() {
   if (mode === "http") {
     const port = parseInt(process.env.PORT ?? "8847", 10);
     const authToken = process.env.MCP_AUTH_TOKEN;
-    const sessions = new Map<
-      string,
-      { transport: StreamableHTTPServerTransport; server: McpServer }
-    >();
+    const sessions = new Map<string, SessionEntry>();
+    const sessionSweep = setInterval(
+      () => {
+        void expireIdleSessions(sessions).catch((error) => {
+          console.error("Failed to expire idle MCP sessions:", error);
+        });
+      },
+      5 * 60 * 1000
+    );
+    sessionSweep.unref();
 
     if (authToken) {
       console.error(
@@ -985,6 +992,7 @@ async function main() {
         if (sessionId && sessions.has(sessionId)) {
           // Existing session
           const session = sessions.get(sessionId)!;
+          session.lastAccessedAt = Date.now();
           await session.transport.handleRequest(req, res);
           return;
         }
@@ -1006,7 +1014,11 @@ async function main() {
           await transport.handleRequest(req, res);
 
           if (transport.sessionId) {
-            sessions.set(transport.sessionId, { transport, server: sessionServer });
+            sessions.set(transport.sessionId, {
+              transport,
+              server: sessionServer,
+              lastAccessedAt: Date.now(),
+            });
           }
           return;
         }
