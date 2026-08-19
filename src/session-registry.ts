@@ -9,6 +9,13 @@ export interface SessionEntry {
   lastAccessedAt: number;
 }
 
+export function isUnknownSession(
+  sessions: Map<string, SessionEntry>,
+  sessionId: string | undefined
+): boolean {
+  return sessionId !== undefined && !sessions.has(sessionId);
+}
+
 export async function expireIdleSessions(
   sessions: Map<string, SessionEntry>,
   now = Date.now()

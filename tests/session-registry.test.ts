@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   expireIdleSessions,
+  isUnknownSession,
   SESSION_IDLE_TIMEOUT_MS,
   type SessionEntry,
 } from "../src/session-registry.js";
@@ -38,5 +39,19 @@ describe("expireIdleSessions", () => {
     await expect(expireIdleSessions(sessions, now)).resolves.toBe(1);
     expect(sessions.has("expired")).toBe(false);
     expect(expired.close).toHaveBeenCalledOnce();
+  });
+});
+
+describe("isUnknownSession", () => {
+  it("identifies a stale client session after the server has discarded it", () => {
+    const sessions = new Map<string, SessionEntry>();
+
+    expect(isUnknownSession(sessions, "expired-session")).toBe(true);
+  });
+
+  it("allows initialization requests without a session ID", () => {
+    const sessions = new Map<string, SessionEntry>();
+
+    expect(isUnknownSession(sessions, undefined)).toBe(false);
   });
 });

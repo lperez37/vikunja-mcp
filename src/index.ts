@@ -8,7 +8,7 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { z } from "zod";
 import { getClient } from "./vikunja-client.js";
-import { expireIdleSessions, type SessionEntry } from "./session-registry.js";
+import { expireIdleSessions, isUnknownSession, type SessionEntry } from "./session-registry.js";
 import type {
   Project,
   Task,
@@ -988,6 +988,14 @@ async function main() {
 
         // Check for existing session
         const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
+        // A client can retain a session ID after a restart or idle expiry.
+        // A 404 tells MCP clients to initialize a replacement session.
+        if (isUnknownSession(sessions, sessionId)) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Session not found" }));
+          return;
+        }
 
         if (sessionId && sessions.has(sessionId)) {
           // Existing session
