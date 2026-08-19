@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { z, type ZodRawShape } from "zod";
 
 // Mock the vikunja-client module
 const mockGet = vi.fn();
@@ -58,6 +59,12 @@ async function callTool(name: string, args: Record<string, unknown> = {}) {
   return tool.handler(args);
 }
 
+function parseToolInput(name: string, args: Record<string, unknown>) {
+  const tool = registeredTools.get(name);
+  if (!tool) throw new Error(`Tool "${name}" not found`);
+  return z.object(tool.schema as ZodRawShape).safeParse(args);
+}
+
 describe("MCP Tool Handlers", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -86,8 +93,9 @@ describe("MCP Tool Handlers", () => {
       StdioServerTransport: class MockStdioServerTransport {},
     }));
 
-    // Import index to register tools
-    await import("../src/index.js");
+    // Import index and create a server to register tools
+    const { createMcpServer } = await import("../src/index.js");
+    createMcpServer();
   });
 
   afterEach(() => {
@@ -770,6 +778,23 @@ describe("MCP Tool Handlers", () => {
       });
       expect(data).toEqual(mockRelation);
     });
+
+    it("rejects unsupported relation kinds and non-positive task IDs", () => {
+      expect(
+        parseToolInput("task_relations_add", {
+          taskId: 0,
+          otherTaskId: 2,
+          relationKind: "blocking",
+        }).success
+      ).toBe(false);
+      expect(
+        parseToolInput("task_relations_add", {
+          taskId: 1,
+          otherTaskId: 2,
+          relationKind: "../../projects",
+        }).success
+      ).toBe(false);
+    });
   });
 
   describe("task_relations_remove", () => {
@@ -786,6 +811,23 @@ describe("MCP Tool Handlers", () => {
       expect(mockDelete).toHaveBeenCalledWith("/tasks/1/relations/blocking/2");
       expect(data.success).toBe(true);
       expect(data.message).toBe("Task relation removed");
+    });
+
+    it("rejects path traversal and non-integer path IDs", () => {
+      expect(
+        parseToolInput("task_relations_remove", {
+          taskId: 1,
+          otherTaskId: 2,
+          relationKind: "../blocking",
+        }).success
+      ).toBe(false);
+      expect(
+        parseToolInput("task_relations_remove", {
+          taskId: 1.5,
+          otherTaskId: 2,
+          relationKind: "blocking",
+        }).success
+      ).toBe(false);
     });
   });
 

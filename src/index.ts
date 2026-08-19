@@ -3,12 +3,23 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { Buffer } from "node:buffer";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { getClient } from "./vikunja-client.js";
-import { expireIdleSessions, isUnknownSession, type SessionEntry } from "./session-registry.js";
+import {
+  acquireSession,
+  expireIdleSessions,
+  hasSessionCapacity,
+  MAX_CONCURRENT_POST_REQUESTS,
+  MAX_SESSION_COUNT,
+  MAX_SESSIONS_PER_SOURCE,
+  RequestAdmissionGate,
+  type SessionEntry,
+} from "./session-registry.js";
 import type {
   Project,
   Task,
@@ -74,6 +85,127 @@ const TASK_UPDATE_STRIP_FIELDS = [
   "identifier",
   "index",
 ] as const;
+
+const TASK_RELATION_KINDS = [
+  "subtask",
+  "parenttask",
+  "related",
+  "duplicateof",
+  "duplicates",
+  "blocking",
+  "blocked",
+  "precedes",
+  "follows",
+  "copiedfrom",
+  "copiedto",
+] as const;
+
+const positiveIntegerId = z.coerce.number().int().positive();
+const taskRelationKind = z.enum(TASK_RELATION_KINDS);
+
+export const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
+
+class HttpRequestError extends Error {
+  constructor(
+    readonly statusCode: number,
+    message: string,
+    readonly jsonRpcCode = -32600
+  ) {
+    super(message);
+  }
+}
+
+export function requireHttpAuthToken(value: string | undefined): string {
+  if (!value || value.trim().length === 0) {
+    throw new Error("MCP_AUTH_TOKEN is required when MCP_TRANSPORT=http");
+  }
+  return value;
+}
+
+export function parseRequestPath(rawUrl: string | undefined): string {
+  if (!rawUrl) throw new HttpRequestError(400, "Malformed request URL");
+
+  try {
+    const baseUrl = new URL("http://localhost");
+    const parsed = new URL(rawUrl, baseUrl);
+    if (parsed.origin !== baseUrl.origin || !rawUrl.startsWith("/")) {
+      throw new Error("Request target must be origin-form");
+    }
+    return parsed.pathname;
+  } catch {
+    throw new HttpRequestError(400, "Malformed request URL");
+  }
+}
+
+export function isEntrypoint(moduleUrl: string, argvPath = process.argv[1]): boolean {
+  if (!argvPath) return false;
+  try {
+    return realpathSync(argvPath) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return false;
+  }
+}
+
+export async function readJsonRequestBody(
+  req: IncomingMessage,
+  limit = MAX_REQUEST_BODY_BYTES
+): Promise<unknown> {
+  const contentLength = req.headers["content-length"];
+  if (contentLength !== undefined) {
+    const declaredLength = Number(contentLength);
+    if (!Number.isSafeInteger(declaredLength) || declaredLength < 0) {
+      throw new HttpRequestError(400, "Invalid Content-Length");
+    }
+    if (declaredLength > limit) {
+      req.resume();
+      throw new HttpRequestError(413, "Request body too large", -32000);
+    }
+  }
+
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > limit) {
+      req.resume();
+      throw new HttpRequestError(413, "Request body too large", -32000);
+    }
+    chunks.push(buffer);
+  }
+
+  if (size === 0) throw new HttpRequestError(400, "Request body is required", -32600);
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new HttpRequestError(400, "Parse error", -32700);
+  }
+}
+
+function sendJson(res: ServerResponse, statusCode: number, body: unknown): void {
+  if (res.headersSent) {
+    res.end();
+    return;
+  }
+  res.writeHead(statusCode, {
+    "Content-Type": "application/json",
+    "X-Content-Type-Options": "nosniff",
+  });
+  res.end(JSON.stringify(body));
+}
+
+function sendMcpError(
+  res: ServerResponse,
+  statusCode: number,
+  code: number,
+  message: string
+): void {
+  sendJson(res, statusCode, {
+    jsonrpc: "2.0",
+    error: { code, message },
+    id: null,
+  });
+}
 
 // Build a full-object update body by stripping read-only fields from the
 // current task, then overlaying only the caller-provided updates. Used to
@@ -141,7 +273,7 @@ Tasks return numeric IDs prefixed with \`#\` (e.g. \`#325\`). Use these for dire
 `;
 
 // Factory: create a new McpServer with all tools registered
-function createMcpServer(): McpServer {
+export function createMcpServer(): McpServer {
   const server = new McpServer(
     {
       name: "vikunja",
@@ -645,13 +777,11 @@ function createMcpServer(): McpServer {
     "task_relations_add",
     "Create a relation between two tasks",
     {
-      taskId: z.coerce.number().describe("The source task ID"),
-      otherTaskId: z.coerce.number().describe("The target task ID"),
-      relationKind: z
-        .string()
-        .describe(
-          "Relation type: subtask, parenttask, related, duplicateof, duplicates, blocking, blocked, precedes, follows, copiedfrom, copiedto"
-        ),
+      taskId: positiveIntegerId.describe("The source task ID"),
+      otherTaskId: positiveIntegerId.describe("The target task ID"),
+      relationKind: taskRelationKind.describe(
+        "Relation type: subtask, parenttask, related, duplicateof, duplicates, blocking, blocked, precedes, follows, copiedfrom, copiedto"
+      ),
     },
     async (args) => {
       try {
@@ -671,9 +801,9 @@ function createMcpServer(): McpServer {
     "task_relations_remove",
     "Remove a relation between two tasks",
     {
-      taskId: z.coerce.number().describe("The source task ID"),
-      otherTaskId: z.coerce.number().describe("The target task ID"),
-      relationKind: z.string().describe("Relation type to remove"),
+      taskId: positiveIntegerId.describe("The source task ID"),
+      otherTaskId: positiveIntegerId.describe("The target task ID"),
+      relationKind: taskRelationKind.describe("Relation type to remove"),
     },
     async (args) => {
       try {
@@ -915,144 +1045,236 @@ function createMcpServer(): McpServer {
   return server;
 }
 
-// Start the server
-async function main() {
-  const mode = process.env.MCP_TRANSPORT ?? "stdio";
-
-  if (mode === "http") {
-    const port = parseInt(process.env.PORT ?? "8847", 10);
-    const authToken = process.env.MCP_AUTH_TOKEN;
-    const sessions = new Map<string, SessionEntry>();
-    const sessionSweep = setInterval(
-      () => {
-        void expireIdleSessions(sessions).catch((error) => {
-          console.error("Failed to expire idle MCP sessions:", error);
-        });
-      },
-      5 * 60 * 1000
-    );
-    sessionSweep.unref();
-
-    if (authToken) {
-      console.error(
-        `Vikunja MCP server (HTTP) auth enabled — requests to /mcp must present Authorization: Bearer <token>`
-      );
-    } else {
-      console.error(
-        `Vikunja MCP server (HTTP) auth DISABLED — MCP_AUTH_TOKEN not set. Anyone reaching the port can call tools.`
-      );
-    }
-
-    // Timing-safe comparison of the caller's bearer token against the
-    // configured MCP_AUTH_TOKEN. Returns false if either value is missing
-    // or if lengths differ, without leaking which was the cause.
-    const isAuthorized = (headerValue: string | undefined): boolean => {
-      if (!authToken) return true;
-      if (!headerValue) return false;
-      const match = headerValue.match(/^Bearer\s+(.+)$/i);
-      if (!match) return false;
-      const provided = Buffer.from(match[1], "utf8");
-      const expected = Buffer.from(authToken, "utf8");
-      if (provided.length !== expected.length) return false;
-      return timingSafeEqual(provided, expected);
-    };
-
-    const httpServer = createServer(async (req, res) => {
-      const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
-
-      // Health check — intentionally unauthenticated so external monitors
-      // can probe liveness without holding the shared secret.
-      if (req.method === "GET" && url.pathname === "/health") {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify({
-            status: "ok",
-            transport: "http",
-            sessions: sessions.size,
-            auth: authToken ? "required" : "disabled",
-          })
-        );
-        return;
-      }
-
-      // MCP endpoint
-      if (url.pathname === "/mcp") {
-        if (!isAuthorized(req.headers.authorization)) {
-          res.writeHead(401, {
-            "Content-Type": "application/json",
-            "WWW-Authenticate": 'Bearer realm="vikunja-mcp"',
-          });
-          res.end(JSON.stringify({ error: "Unauthorized" }));
-          return;
-        }
-
-        // Check for existing session
-        const sessionId = req.headers["mcp-session-id"] as string | undefined;
-
-        // A client can retain a session ID after a restart or idle expiry.
-        // A 404 tells MCP clients to initialize a replacement session.
-        if (isUnknownSession(sessions, sessionId)) {
-          res.writeHead(404, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Session not found" }));
-          return;
-        }
-
-        if (sessionId && sessions.has(sessionId)) {
-          // Existing session
-          const session = sessions.get(sessionId)!;
-          session.lastAccessedAt = Date.now();
-          await session.transport.handleRequest(req, res);
-          return;
-        }
-
-        // New session - only on POST (initialization)
-        if (req.method === "POST") {
-          const sessionServer = createMcpServer();
-          const transport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: () => randomUUID(),
-          });
-
-          transport.onclose = () => {
-            if (transport.sessionId) {
-              sessions.delete(transport.sessionId);
-            }
-          };
-
-          await sessionServer.connect(transport);
-          await transport.handleRequest(req, res);
-
-          if (transport.sessionId) {
-            sessions.set(transport.sessionId, {
-              transport,
-              server: sessionServer,
-              lastAccessedAt: Date.now(),
-            });
-          }
-          return;
-        }
-
-        // GET without session (SSE listener) or DELETE
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "No valid session. Send an initialize request first." }));
-        return;
-      }
-
-      res.writeHead(404);
-      res.end("Not found");
-    });
-
-    httpServer.listen(port, "0.0.0.0", () => {
-      console.error(`Vikunja MCP server (HTTP) listening on port ${port}`);
-    });
-  } else {
-    const server = createMcpServer();
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-    console.error("Vikunja MCP server (stdio) started");
-  }
+export interface HttpServerOptions {
+  authToken: string;
+  maxConcurrentPosts?: number;
+  maxSessions?: number;
+  maxSessionsPerSource?: number;
+  serverFactory?: () => McpServer;
 }
 
-main().catch((error) => {
-  console.error("Fatal error:", error);
-  process.exit(1);
-});
+export interface HttpServerRuntime {
+  server: Server;
+  sessions: Map<string, SessionEntry>;
+  close: () => Promise<void>;
+}
+
+export function createHttpServer(options: HttpServerOptions): HttpServerRuntime {
+  const authToken = requireHttpAuthToken(options.authToken);
+  const sessions = new Map<string, SessionEntry>();
+  const admissionGate = new RequestAdmissionGate(
+    options.maxConcurrentPosts ?? MAX_CONCURRENT_POST_REQUESTS
+  );
+  const pendingBySource = new Map<string, number>();
+  const serverFactory = options.serverFactory ?? createMcpServer;
+  let pendingSessions = 0;
+
+  const isAuthorized = (headerValue: string | undefined): boolean => {
+    if (!headerValue) return false;
+    const match = headerValue.match(/^Bearer\s+(.+)$/i);
+    if (!match) return false;
+    const provided = Buffer.from(match[1], "utf8");
+    const expected = Buffer.from(authToken, "utf8");
+    return provided.length === expected.length && timingSafeEqual(provided, expected);
+  };
+
+  const reserveInitialization = (source: string): (() => void) | undefined => {
+    const pendingForSource = pendingBySource.get(source) ?? 0;
+    if (
+      !hasSessionCapacity(
+        sessions,
+        pendingSessions,
+        source,
+        pendingForSource,
+        options.maxSessions ?? MAX_SESSION_COUNT,
+        options.maxSessionsPerSource ?? MAX_SESSIONS_PER_SOURCE
+      )
+    ) {
+      return undefined;
+    }
+
+    pendingSessions += 1;
+    pendingBySource.set(source, pendingForSource + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      pendingSessions -= 1;
+      const remaining = (pendingBySource.get(source) ?? 1) - 1;
+      if (remaining === 0) pendingBySource.delete(source);
+      else pendingBySource.set(source, remaining);
+    };
+  };
+
+  const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    let releaseAdmission: (() => void) | undefined;
+    let releaseInitialization: (() => void) | undefined;
+    let releaseSession: (() => void) | undefined;
+
+    try {
+      const path = parseRequestPath(req.url);
+      if (req.method === "GET" && path === "/health") {
+        sendJson(res, 200, { status: "ok", auth: "required" });
+        return;
+      }
+      if (path !== "/mcp") {
+        sendJson(res, 404, { error: "Not found" });
+        return;
+      }
+      if (!isAuthorized(req.headers.authorization)) {
+        res.setHeader("WWW-Authenticate", 'Bearer realm="vikunja-mcp"');
+        sendJson(res, 401, { error: "Unauthorized" });
+        return;
+      }
+
+      if (req.method === "POST") {
+        releaseAdmission = admissionGate.tryAcquire();
+        if (!releaseAdmission) {
+          res.setHeader("Retry-After", "1");
+          sendMcpError(res, 429, -32000, "Too many concurrent requests");
+          return;
+        }
+      }
+
+      const sessionHeader = req.headers["mcp-session-id"];
+      const sessionId = typeof sessionHeader === "string" ? sessionHeader : undefined;
+      const lease = sessionId ? acquireSession(sessions, sessionId) : undefined;
+      if (sessionId && !lease) {
+        sendMcpError(res, 404, -32001, "Session not found");
+        return;
+      }
+      releaseSession = lease?.release;
+
+      if (lease) {
+        const parsedBody = req.method === "POST" ? await readJsonRequestBody(req) : undefined;
+        await lease.entry.transport.handleRequest(req, res, parsedBody);
+        return;
+      }
+
+      if (req.method !== "POST") {
+        if (req.method === "GET" || req.method === "DELETE") {
+          sendMcpError(res, 400, -32000, "Session ID is required");
+        } else {
+          res.setHeader("Allow", "GET, POST, DELETE");
+          sendMcpError(res, 405, -32600, "Method not allowed");
+        }
+        return;
+      }
+
+      const source = req.socket.remoteAddress ?? "unknown";
+      releaseInitialization = reserveInitialization(source);
+      if (!releaseInitialization) {
+        res.setHeader("Retry-After", "60");
+        sendMcpError(res, 429, -32000, "Session capacity reached for this client");
+        return;
+      }
+
+      const parsedBody = await readJsonRequestBody(req);
+      const sessionServer = serverFactory();
+      let initializedSessionId: string | undefined;
+      const sessionState: { entry?: SessionEntry } = {};
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (newSessionId) => {
+          if (!sessionState.entry) throw new Error("Session initialized before setup completed");
+          initializedSessionId = newSessionId;
+          sessions.set(newSessionId, sessionState.entry);
+          releaseInitialization?.();
+          releaseInitialization = undefined;
+        },
+      });
+      const entry: SessionEntry = {
+        transport,
+        server: sessionServer,
+        lastAccessedAt: Date.now(),
+        source,
+        activeRequests: 1,
+      };
+      sessionState.entry = entry;
+      transport.onclose = () => {
+        if (initializedSessionId && sessions.get(initializedSessionId) === entry) {
+          sessions.delete(initializedSessionId);
+        }
+      };
+
+      try {
+        await sessionServer.connect(transport);
+        await transport.handleRequest(req, res, parsedBody);
+        if (!initializedSessionId) await sessionServer.close();
+      } catch (error) {
+        if (initializedSessionId && sessions.get(initializedSessionId) === entry) {
+          sessions.delete(initializedSessionId);
+        }
+        await sessionServer.close().catch(() => undefined);
+        throw error;
+      } finally {
+        entry.activeRequests = Math.max(0, entry.activeRequests - 1);
+      }
+    } catch (error) {
+      if (error instanceof HttpRequestError) {
+        sendMcpError(res, error.statusCode, error.jsonRpcCode, error.message);
+      } else {
+        console.error("HTTP request failed:", error);
+        sendMcpError(res, 500, -32603, "Internal server error");
+      }
+    } finally {
+      releaseSession?.();
+      releaseInitialization?.();
+      releaseAdmission?.();
+    }
+  };
+
+  const server = createServer((req, res) => {
+    void handleRequest(req, res);
+  });
+  const sessionSweep = setInterval(
+    () => {
+      void expireIdleSessions(sessions).catch((error) => {
+        console.error("Failed to expire idle MCP sessions:", error);
+      });
+    },
+    5 * 60 * 1000
+  );
+  sessionSweep.unref();
+
+  return {
+    server,
+    sessions,
+    close: async () => {
+      clearInterval(sessionSweep);
+      await Promise.all(Array.from(sessions.values(), (session) => session.server.close()));
+      sessions.clear();
+      if (server.listening) {
+        await new Promise<void>((resolveClose, rejectClose) => {
+          server.close((error) => (error ? rejectClose(error) : resolveClose()));
+        });
+      }
+    },
+  };
+}
+
+async function main() {
+  const mode = process.env.MCP_TRANSPORT ?? "stdio";
+  if (mode === "http") {
+    const port = parseInt(process.env.PORT ?? "8847", 10);
+    const runtime = createHttpServer({
+      authToken: requireHttpAuthToken(process.env.MCP_AUTH_TOKEN),
+    });
+    runtime.server.listen(port, "0.0.0.0", () => {
+      console.error(`Vikunja MCP server (HTTP) listening on port ${port}; auth required`);
+    });
+    return;
+  }
+
+  const server = createMcpServer();
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error("Vikunja MCP server (stdio) started");
+}
+
+if (isEntrypoint(import.meta.url)) {
+  main().catch((error) => {
+    console.error("Fatal error:", error);
+    process.exit(1);
+  });
+}

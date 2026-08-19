@@ -10,4 +10,5 @@ services:
       - PORT=8847
       - VIKUNJA_URL=${VIKUNJA_URL}
       - VIKUNJA_API_TOKEN=${VIKUNJA_API_TOKEN}
+      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN:?MCP_AUTH_TOKEN is required}
     restart: unless-stopped

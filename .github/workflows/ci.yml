@@ -8,20 +8,25 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
 
     strategy:
       matrix:
-        node-version: [18, 20]
+        node-version: ["22.19.0", 24]
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.node-version }}
           cache: "npm"
@@ -36,11 +41,11 @@ jobs:
         run: npm run typecheck
 
       - name: Run tests
-        if: matrix.node-version == 18
+        if: matrix.node-version == '22.19.0'
         run: npm run test:run
 
       - name: Run tests with coverage
-        if: matrix.node-version != 18
+        if: matrix.node-version != '22.19.0'
         run: npm run test:coverage
 
       - name: Build TypeScript
