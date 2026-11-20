@@ -36,7 +36,8 @@ ssh vps 'docker logs --since 10m vikunja-mcp-1'
 The health response must report `status: ok` and `auth: required`. The `/mcp`
 endpoint itself requires the bearer token configured by the MCP client.
 
-HTTP MCP sessions are held in memory and are lost on deployment. An unknown or
-expired session ID must receive HTTP 404 so clients can initialize a new session.
-If a client still reports `Server not initialized`, reconnect or restart that
-client and inspect the MCP container logs.
+The `/mcp` endpoint uses stateless Streamable HTTP over POST. Clients still
+initialize and send `notifications/initialized` before listing or calling tools
+without an `Mcp-Session-Id`. GET and DELETE on `/mcp` return HTTP 405 for
+authenticated clients. After deploying, run `opencode mcp list` with the
+existing configuration and verify a read-only tool such as `projects_list`.

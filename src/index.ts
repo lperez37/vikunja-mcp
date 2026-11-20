@@ -4,22 +4,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { getClient } from "./vikunja-client.js";
-import {
-  acquireSession,
-  expireIdleSessions,
-  hasSessionCapacity,
-  MAX_CONCURRENT_POST_REQUESTS,
-  MAX_SESSION_COUNT,
-  MAX_SESSIONS_PER_SOURCE,
-  RequestAdmissionGate,
-  type SessionEntry,
-} from "./session-registry.js";
 import type {
   Project,
   Task,
@@ -104,6 +94,7 @@ const positiveIntegerId = z.coerce.number().int().positive();
 const taskRelationKind = z.enum(TASK_RELATION_KINDS);
 
 export const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
+const MAX_CONCURRENT_POST_REQUESTS = 16;
 
 class HttpRequestError extends Error {
   constructor(
@@ -1048,26 +1039,19 @@ export function createMcpServer(): McpServer {
 export interface HttpServerOptions {
   authToken: string;
   maxConcurrentPosts?: number;
-  maxSessions?: number;
-  maxSessionsPerSource?: number;
   serverFactory?: () => McpServer;
 }
 
 export interface HttpServerRuntime {
   server: Server;
-  sessions: Map<string, SessionEntry>;
   close: () => Promise<void>;
 }
 
 export function createHttpServer(options: HttpServerOptions): HttpServerRuntime {
   const authToken = requireHttpAuthToken(options.authToken);
-  const sessions = new Map<string, SessionEntry>();
-  const admissionGate = new RequestAdmissionGate(
-    options.maxConcurrentPosts ?? MAX_CONCURRENT_POST_REQUESTS
-  );
-  const pendingBySource = new Map<string, number>();
+  const maxConcurrentPosts = options.maxConcurrentPosts ?? MAX_CONCURRENT_POST_REQUESTS;
   const serverFactory = options.serverFactory ?? createMcpServer;
-  let pendingSessions = 0;
+  let activePosts = 0;
 
   const isAuthorized = (headerValue: string | undefined): boolean => {
     if (!headerValue) return false;
@@ -1078,39 +1062,7 @@ export function createHttpServer(options: HttpServerOptions): HttpServerRuntime 
     return provided.length === expected.length && timingSafeEqual(provided, expected);
   };
 
-  const reserveInitialization = (source: string): (() => void) | undefined => {
-    const pendingForSource = pendingBySource.get(source) ?? 0;
-    if (
-      !hasSessionCapacity(
-        sessions,
-        pendingSessions,
-        source,
-        pendingForSource,
-        options.maxSessions ?? MAX_SESSION_COUNT,
-        options.maxSessionsPerSource ?? MAX_SESSIONS_PER_SOURCE
-      )
-    ) {
-      return undefined;
-    }
-
-    pendingSessions += 1;
-    pendingBySource.set(source, pendingForSource + 1);
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      pendingSessions -= 1;
-      const remaining = (pendingBySource.get(source) ?? 1) - 1;
-      if (remaining === 0) pendingBySource.delete(source);
-      else pendingBySource.set(source, remaining);
-    };
-  };
-
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    let releaseAdmission: (() => void) | undefined;
-    let releaseInitialization: (() => void) | undefined;
-    let releaseSession: (() => void) | undefined;
-
     try {
       const path = parseRequestPath(req.url);
       if (req.method === "GET" && path === "/health") {
@@ -1127,123 +1079,52 @@ export function createHttpServer(options: HttpServerOptions): HttpServerRuntime 
         return;
       }
 
-      if (req.method === "POST") {
-        releaseAdmission = admissionGate.tryAcquire();
-        if (!releaseAdmission) {
-          res.setHeader("Retry-After", "1");
-          sendMcpError(res, 429, -32000, "Too many concurrent requests");
-          return;
-        }
-      }
-
-      const sessionHeader = req.headers["mcp-session-id"];
-      const sessionId = typeof sessionHeader === "string" ? sessionHeader : undefined;
-      const lease = sessionId ? acquireSession(sessions, sessionId) : undefined;
-      if (sessionId && !lease) {
-        sendMcpError(res, 404, -32001, "Session not found");
-        return;
-      }
-      releaseSession = lease?.release;
-
-      if (lease) {
-        const parsedBody = req.method === "POST" ? await readJsonRequestBody(req) : undefined;
-        await lease.entry.transport.handleRequest(req, res, parsedBody);
-        return;
-      }
-
       if (req.method !== "POST") {
-        if (req.method === "GET" || req.method === "DELETE") {
-          sendMcpError(res, 400, -32000, "Session ID is required");
-        } else {
-          res.setHeader("Allow", "GET, POST, DELETE");
-          sendMcpError(res, 405, -32600, "Method not allowed");
-        }
+        res.setHeader("Allow", "POST");
+        sendMcpError(res, 405, -32600, "Method not allowed");
+        return;
+      }
+      if (activePosts >= maxConcurrentPosts) {
+        res.setHeader("Retry-After", "1");
+        sendMcpError(res, 429, -32000, "Too many concurrent requests");
         return;
       }
 
-      const source = req.socket.remoteAddress ?? "unknown";
-      releaseInitialization = reserveInitialization(source);
-      if (!releaseInitialization) {
-        res.setHeader("Retry-After", "60");
-        sendMcpError(res, 429, -32000, "Session capacity reached for this client");
-        return;
-      }
+      activePosts += 1;
+      // ServerResponse emits close after the response finishes or the client disconnects.
+      res.once("close", () => {
+        activePosts -= 1;
+      });
 
       const parsedBody = await readJsonRequestBody(req);
-      const sessionServer = serverFactory();
-      let initializedSessionId: string | undefined;
-      const sessionState: { entry?: SessionEntry } = {};
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: (newSessionId) => {
-          if (!sessionState.entry) throw new Error("Session initialized before setup completed");
-          initializedSessionId = newSessionId;
-          sessions.set(newSessionId, sessionState.entry);
-          releaseInitialization?.();
-          releaseInitialization = undefined;
-        },
+      if (res.destroyed) return;
+      const requestServer = serverFactory();
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      res.once("close", () => {
+        void requestServer.close().catch((error) => {
+          console.error("Failed to close MCP request:", error);
+        });
       });
-      const entry: SessionEntry = {
-        transport,
-        server: sessionServer,
-        lastAccessedAt: Date.now(),
-        source,
-        activeRequests: 1,
-      };
-      sessionState.entry = entry;
-      transport.onclose = () => {
-        if (initializedSessionId && sessions.get(initializedSessionId) === entry) {
-          sessions.delete(initializedSessionId);
-        }
-      };
-
-      try {
-        await sessionServer.connect(transport);
-        await transport.handleRequest(req, res, parsedBody);
-        if (!initializedSessionId) await sessionServer.close();
-      } catch (error) {
-        if (initializedSessionId && sessions.get(initializedSessionId) === entry) {
-          sessions.delete(initializedSessionId);
-        }
-        await sessionServer.close().catch(() => undefined);
-        throw error;
-      } finally {
-        entry.activeRequests = Math.max(0, entry.activeRequests - 1);
-      }
+      await requestServer.connect(transport);
+      if (!res.destroyed) await transport.handleRequest(req, res, parsedBody);
     } catch (error) {
+      if (res.destroyed) return;
       if (error instanceof HttpRequestError) {
         sendMcpError(res, error.statusCode, error.jsonRpcCode, error.message);
       } else {
         console.error("HTTP request failed:", error);
         sendMcpError(res, 500, -32603, "Internal server error");
       }
-    } finally {
-      releaseSession?.();
-      releaseInitialization?.();
-      releaseAdmission?.();
     }
   };
 
   const server = createServer((req, res) => {
     void handleRequest(req, res);
   });
-  const sessionSweep = setInterval(
-    () => {
-      void expireIdleSessions(sessions).catch((error) => {
-        console.error("Failed to expire idle MCP sessions:", error);
-      });
-    },
-    5 * 60 * 1000
-  );
-  sessionSweep.unref();
 
   return {
     server,
-    sessions,
     close: async () => {
-      clearInterval(sessionSweep);
-      await Promise.all(Array.from(sessions.values(), (session) => session.server.close()));
-      sessions.clear();
       if (server.listening) {
         await new Promise<void>((resolveClose, rejectClose) => {
           server.close((error) => (error ? rejectClose(error) : resolveClose()));
